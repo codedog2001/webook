@@ -5,22 +5,29 @@ import (
 	"fmt"
 	regexp "github.com/dlclark/regexp2"
 	"github.com/gin-gonic/gin"
-	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"net/http"
-	"time"
 	"xiaoweishu/webook/internal/domain"
 	"xiaoweishu/webook/internal/service"
+	ijwt "xiaoweishu/webook/internal/web/jwt"
 )
 
+const biz = "login"
+
 type UserHandLer struct {
-	svc         *service.UserService //其实就是gorm,db
+	//svc 和codesvc需要传入的是接口，而不再是结构体
+	//接口本身就是引用类型，不需要再加*，否则后面调用函数会出错
+
+	svc         service.UserService //其实就是gorm,db
+	codeSvc     service.CodeSerVice
 	emailExp    *regexp.Regexp
 	passwordExp *regexp.Regexp
+	ijwt.Handler
 }
 
-var JWTKey = []byte("k6CswdUm77WKcbM68UQUuxVsHSpTCwgK")
+func NewUserHandLer(svc service.UserService, codeSvc service.CodeSerVice, hdl ijwt.Handler) *UserHandLer {
+	//如此传入的参数的实现了该接口的结构体指针，go语言会做隐式的类型转换
 
-func NewUserHandLer(svc *service.UserService) *UserHandLer {
 	const (
 		emailRegexPattern    = "^\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)*$"
 		passwordRegexPattern = `^(?=.*[A-Za-z])(?=.*\d)(?=.*[$@$!%*#?&])[A-Za-z\d$@$!%*#?&]{8,}$`
@@ -31,6 +38,8 @@ func NewUserHandLer(svc *service.UserService) *UserHandLer {
 		emailExp:    emailExp,
 		passwordExp: passwordExp,
 		svc:         svc,
+		codeSvc:     codeSvc,
+		Handler:     hdl,
 	}
 }
 
@@ -43,7 +52,102 @@ func (u *UserHandLer) RegisterUsersRoutes(server *gin.Engine) {
 	ug.POST("/edit", u.Edit)
 	ug.POST("/login", u.LoginJWT)
 	ug.POST("/profile", u.ProfileJWT)
+	ug.POST("/login_sms/code/send", u.SendLoginSMSCode)
+	ug.POST("/login_sms", u.LoginSMS)
+	ug.POST("/logout", u.LogoutJWT)
 }
+func (u *UserHandLer) SendLoginSMSCode(ctx *gin.Context) {
+	type Req struct {
+		Phone string `json:"phone"`
+	}
+	var req Req
+	err := ctx.Bind(&req)
+	if err != nil {
+		return
+	}
+	//在生产环境中这里应该使用正则表达式进行校验
+	if req.Phone == "" {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 4,
+			Msg:  "输入有误",
+		})
+		return
+	}
+	err = u.codeSvc.Send(ctx, biz, req.Phone)
+	switch err {
+	case nil:
+		ctx.JSON(http.StatusOK, Result{
+			Msg: "发送成功",
+		})
+	case service.ErrCodeSendTooMany:
+		ctx.JSON(http.StatusOK, Result{
+			Msg: "发送太频繁，请稍后再试",
+		})
+	default:
+		ctx.JSON(http.StatusOK, Result{
+			Code: 5,
+			Msg:  "系统错误",
+		})
+		return
+	}
+
+}
+func (u *UserHandLer) LoginSMS(ctx *gin.Context) {
+	type Req struct {
+		Phone string `json:"phone"`
+		Code  string `json:"code"`
+	}
+	var req Req
+	err := ctx.Bind(&req)
+	if err != nil {
+		return
+	}
+	if req.Code == "" {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 5,
+			Msg:  "请输入验证码",
+		})
+		return
+	}
+	//这边也要进行各种校验，比如验证码登录时的手机号是否有效，跟发送验证码的手机号是不是同一个等等
+	ok, err := u.codeSvc.Verify(ctx, biz, req.Phone, req.Code)
+	if err != nil {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 5,
+			Msg:  "系统错误",
+		})
+		return
+	}
+	if !ok {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 4,
+			Msg:  "输入有误",
+		})
+		return
+	}
+	user, err := u.svc.FindOrCrete(ctx, req.Phone)
+	if err != nil {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 5,
+			Msg:  "系统错误",
+		})
+		return
+	}
+	//这里需要一个uid，所以要从上面取出
+	err = u.SetLoginToken(ctx, user.Id)
+	if err != nil {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 5,
+			Msg:  "系统错误",
+		})
+		return
+	}
+	ctx.JSON(http.StatusOK, Result{
+		Code: 4,
+		Msg:  "验证码校验通过",
+	})
+}
+
 func (u *UserHandLer) SignUp(ctx *gin.Context) {
 	type SignUpReq struct {
 		Email           string `json:"email"`
@@ -139,7 +243,7 @@ func (u UserHandLer) ProfileJWT(ctx *gin.Context) {
 		ctx.String(http.StatusOK, "系统错误")
 		return
 	}
-	claims, ok := c.(*UserClaims) //类型断言
+	claims, ok := c.(*ijwt.UserClaims) //类型断言
 	if !ok {
 		ctx.String(http.StatusOK, "系统错误")
 		return
@@ -160,20 +264,15 @@ func (h UserHandLer) LoginJWT(ctx *gin.Context) {
 	u, err := h.svc.Login(ctx, req.Email, req.Password)
 	switch {
 	case err == nil:
-		uc := UserClaims{
-			Uid:       u.Id,
-			UserAgent: ctx.GetHeader("User-Agent"),
-			RegisteredClaims: jwt.RegisteredClaims{
-				// 1 分钟过期
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute * 5)),
-			},
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS512, uc)
-		tokenStr, err := token.SignedString(JWTKey)
+		err := h.SetLoginToken(ctx, u.Id)
 		if err != nil {
-			ctx.String(http.StatusOK, "系统错误")
+			ctx.JSON(http.StatusOK, Result{
+				Code: 5,
+				Msg:  "系统错误",
+				Data: nil,
+			})
+			return
 		}
-		ctx.Header("x-jwt-token", tokenStr)
 		ctx.String(http.StatusOK, "登录成功")
 	case errors.Is(err, service.ErrInvalidUserOrPassword):
 		ctx.String(http.StatusOK, "用户名或者密码不对")
@@ -181,10 +280,44 @@ func (h UserHandLer) LoginJWT(ctx *gin.Context) {
 		ctx.String(http.StatusOK, "系统错误")
 	}
 }
+func (h *UserHandLer) RefreshToken(ctx *gin.Context) {
+	//约定，前端在Authorization里面岱山跟这个refresh_token
+	tokenStr := h.ExtractToken(ctx)
+	var rc ijwt.RefreshClaims
+	token, err := jwt.ParseWithClaims(tokenStr, &rc, func(token *jwt.Token) (interface{}, error) {
+		return ijwt.RCJWTKey, nil
+	})
+	if err != nil {
+		ctx.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+	if token == nil || !token.Valid {
+		ctx.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+	err = h.CheckSession(ctx, rc.Ssid)
+	if err != nil {
+		//下面写的函数是当cnt>0时，一样会返回错误
+		//token无效，或者redis出现问题
+		ctx.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+	err = h.SetJWTToken(ctx, rc.Uid, rc.Ssid)
+	if err != nil {
+		return
+	}
+}
+func (h UserHandLer) LogoutJWT(ctx *gin.Context) {
+	err := h.ClearToken(ctx)
+	if err != nil {
+		ctx.JSON(http.StatusOK, Result{
+			Code: 5,
+			Msg:  "系统错误",
+		})
+		return
+	}
+	ctx.JSON(http.StatusOK, Result{
+		Msg: "退出登陆成功",
+	})
 
-// UserClaims 声明你自己要放进去token里面的数据
-type UserClaims struct {
-	jwt.RegisteredClaims //这个字段是包里面实现好的，直接组合起来使用就行了
-	Uid                  int64
-	UserAgent            string
 }

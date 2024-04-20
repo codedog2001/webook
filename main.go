@@ -1,28 +1,25 @@
 package main
 
 import (
-	"github.com/gin-contrib/cors"
+	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
+	"log"
 	"net/http"
-	"strings"
-	"time"
-	"xiaoweishu/webook/config"
-	"xiaoweishu/webook/internal/pkg/ginx/mididlewares/ratelimit"
 	"xiaoweishu/webook/internal/repository"
+	"xiaoweishu/webook/internal/repository/cache"
 	"xiaoweishu/webook/internal/repository/dao"
 	"xiaoweishu/webook/internal/service"
 	"xiaoweishu/webook/internal/web"
-	"xiaoweishu/webook/internal/web/middleware"
+	"xiaoweishu/webook/internal/web/jwt"
+	"xiaoweishu/webook/ioc"
 )
 
 func main() {
-	db := initDB()
-	server := initWebServer()
-	initUserHdl(db, server)
-	//server := gin.Default()
+	initLogger()
+	initViper()
+	server := InitWebServerv1()
 	server.GET("/hello", func(ctx *gin.Context) {
 		ctx.String(http.StatusOK, "hello，启动成功了！")
 	})
@@ -31,70 +28,72 @@ func main() {
 		return
 	}
 }
-
-func initUserHdl(db *gorm.DB, server *gin.Engine) {
-	ud := dao.NewUserDAO(db)
-	ur := repository.NewUserRepository(ud)
-	us := service.NewUserService(ur)
-	hdl := web.NewUserHandLer(us)
-	hdl.RegisterUsersRoutes(server)
+func InitWebServerv1() *gin.Engine {
+	cmdable := ioc.InitRedis()
+	handler := jwt.NewRedisJWTHandler(cmdable)
+	loggerV1 := ioc.InitLogger()
+	v := ioc.InitGinMiddlewares(cmdable, handler, loggerV1)
+	db := ioc.InitDB(loggerV1)
+	userDAO := dao.NewUserDAO(db)
+	userCache := cache.NewUserCache(cmdable)
+	userRepository := repository.NewUserRepository(userDAO, userCache)
+	userService := service.NewUserService(userRepository)
+	codeCache := cache.NewCodeCache(cmdable)
+	codeRepository := repository.NewCodeRepository(codeCache)
+	smsService := ioc.InitSMSService()
+	codeSerVice := service.NewCodeService(codeRepository, smsService)
+	userHandLer := web.NewUserHandLer(userService, codeSerVice, handler)
+	wechatService := ioc.InitWechatService(loggerV1)
+	oAuth2WechatHandLer := web.NewOAuth2WechatHandler(wechatService, userService, handler)
+	engine := ioc.InitWebServer(v, userHandLer, oAuth2WechatHandLer)
+	return engine
 }
-
-func initDB() *gorm.DB {
-	//因为webook pod跟mysql不在一个pods上，所以不能用localhost去解析，而是要跟mysql-servie的name对应上
-	//可以理解为service帮你做了dns解析
-	db, err := gorm.Open(mysql.Open(config.Config.DB.DSN))
+func initLogger() {
+	logger, err := zap.NewDevelopment()
 	if err != nil {
 		panic(err)
 	}
-
-	err = dao.InitTable(db)
+	zap.ReplaceGlobals(logger)
+}
+func initViper() {
+	viper.SetConfigName("dev")
+	viper.SetConfigType("yaml")
+	// 当前工作目录的 config 子目录
+	viper.AddConfigPath("config")
+	// 读取配置
+	err := viper.ReadInConfig()
 	if err != nil {
 		panic(err)
 	}
-	return db
+	val := viper.Get("test.key")
+	log.Println(val)
 }
 
-func initWebServer() *gin.Engine {
-	server := gin.Default()
-
-	server.Use(cors.New(cors.Config{
-		//AllowAllOrigins: true,
-		//AllowOrigins:     []string{"http://localhost:3000"},
-		AllowCredentials: true,
-
-		AllowHeaders: []string{"Content-Type", "Authorization"},
-		// 这个是允许前端访问你的后端响应中带的头部
-		ExposeHeaders: []string{"x-jwt-token"},
-		//AllowHeaders: []string{"content-type"},
-		//AllowMethods: []string{"POST"},
-		AllowOriginFunc: func(origin string) bool {
-			if strings.HasPrefix(origin, "http://localhost") {
-				//if strings.Contains(origin, "localhost") {
-				return true
+// 用viper和远程控制中心etcd配合使用
+func initViperRemote() {
+	err := viper.AddRemoteProvider("etcd3",
+		"http://127.0.0.1:12379", "/webook")
+	if err != nil {
+		panic(err)
+	}
+	viper.SetConfigType("yaml")
+	viper.OnConfigChange(func(in fsnotify.Event) {
+		log.Println("远程配置中心发生变更")
+	})
+	go func() {
+		for {
+			err = viper.WatchRemoteConfig()
+			if err != nil {
+				panic(err)
 			}
-			return strings.Contains(origin, "your_company.com")
-		},
-		MaxAge: 12 * time.Hour,
-	}), func(ctx *gin.Context) {
-		println("这是我的 Middleware")
-	})
-
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: config.Config.Redis.Add,
-	})
-
-	server.Use(ratelimit.NewBuilder(redisClient,
-		time.Second, 1).Build())
-
-	useJWT(server)
-	//useSession(server)
-	return server
-}
-
-func useJWT(server *gin.Engine) {
-	login := middleware.LoginJWTMiddlewareBuilder{}
-	server.Use(login.CheckLogin())
+			log.Println("watch", viper.GetString("test.key"))
+			//time.Sleep(time.Second)
+		}
+	}()
+	err = viper.ReadRemoteConfig()
+	if err != nil {
+		panic(err)
+	}
 }
 
 //func useSession(server *gin.Engine) {

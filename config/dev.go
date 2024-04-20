@@ -4,7 +4,7 @@ package config
 
 var Config = config{
 	DB: DBConfig{
-		DSN: "localhost:13316",
+		DSN: "root:root@tcp(webook-live-mysql:13316)/webook",
 	},
 	Redis: RedisConfig{
 		Add: "localhost:6379",

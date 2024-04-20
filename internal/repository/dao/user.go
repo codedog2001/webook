@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
@@ -10,23 +11,51 @@ import (
 
 var (
 	ErrUserDuplicateEmail = errors.New("邮箱冲突")
-	ErrUserNotFound       = gorm.ErrRecordNotFound
+	ErrRecordNotFound     = gorm.ErrRecordNotFound
 )
 
 type User struct {
-	Id       int64  `gorm:"primaryKey,autoIncrement"`
-	Email    string `gorm:"unique"`
-	Password string
-	//创建时间和更新时间 毫秒数
-	Ctime int64
-	Utime int64
+	Id            int64          `gorm:"primaryKey,autoIncrement"`
+	Email         sql.NullString `gorm:"unique"`
+	Password      string
+	Phone         sql.NullString `gorm:"unique"`
+	Ctime         int64
+	Utime         int64
+	Nickname      string
+	WechatUnionID sql.NullString
+	WechatOpenID  sql.NullString `gorm:"unique"`
+	//唯一索引允许有多个空值
+	//但是不能有多个“” 空字符串
+}
+type UserDAO interface {
+	Insert(ctx context.Context, u User) error
+	FindByEmail(ctx context.Context, email string) (User, error)
+	FindByPhone(ctx context.Context, Phone string) (User, error)
+	FindById(ctx context.Context, id int64) (User, error)
+	FindByWechat(ctx context.Context, openID string) (User, error)
 }
 
-type UserDAO struct {
+func (dao *GORMUserDAO) FindByWechat(ctx context.Context, openID string) (User, error) {
+	var u User
+	//取到的数据放在u里面
+	err := dao.db.WithContext(ctx).Where("wechat_open_id=?", openID).First(&u).Error
+	//err:=dao.db.WithContext(ctx).First(&u,"email=?",email).Error
+	//两种写法都可以
+	//如果err= gorm.ErrRecordNotFound,那么就会自动返回errusernotfound
+	return u, err
+}
+
+type GORMUserDAO struct {
 	db *gorm.DB
 }
 
-func (dao *UserDAO) Insert(ctx context.Context, u User) error {
+// NewUserDAO new函数都只是做一个初始化操作
+func NewUserDAO(db *gorm.DB) UserDAO {
+	return &GORMUserDAO{
+		db: db,
+	}
+}
+func (dao *GORMUserDAO) Insert(ctx context.Context, u User) error {
 	now := time.Now().UnixMilli() //毫秒数在高并发的场景下更有优势
 	u.Ctime = now
 	u.Utime = now
@@ -44,13 +73,7 @@ func (dao *UserDAO) Insert(ctx context.Context, u User) error {
 
 }
 
-// NewUserDAO new函数都只是做一个初始化操作
-func NewUserDAO(db *gorm.DB) *UserDAO {
-	return &UserDAO{
-		db: db,
-	}
-}
-func (dao *UserDAO) FindByEmail(ctx context.Context, email string) (User, error) {
+func (dao *GORMUserDAO) FindByEmail(ctx context.Context, email string) (User, error) {
 	var u User
 	//取到的数据放在u里面
 	err := dao.db.WithContext(ctx).Where("email=?", email).First(&u).Error
@@ -58,5 +81,22 @@ func (dao *UserDAO) FindByEmail(ctx context.Context, email string) (User, error)
 	//两种写法都可以
 	//如果err= gorm.ErrRecordNotFound,那么就会自动返回errusernotfound
 	return u, err
-
+}
+func (dao *GORMUserDAO) FindByPhone(ctx context.Context, Phone string) (User, error) {
+	var u User
+	//取到的数据放在u里面
+	err := dao.db.WithContext(ctx).Where("Phone=?", Phone).First(&u).Error
+	//err:=dao.db.WithContext(ctx).First(&u,"email=?",email).Error
+	//两种写法都可以
+	//如果err= gorm.ErrRecordNotFound,那么就会自动返回errusernotfound
+	return u, err
+}
+func (dao *GORMUserDAO) FindById(ctx context.Context, id int64) (User, error) {
+	var u User
+	//取到的数据放在u里面
+	err := dao.db.WithContext(ctx).Where("email=?", id).First(&u).Error
+	//err:=dao.db.WithContext(ctx).First(&u,"email=?",email).Error
+	//两种写法都可以
+	//如果err= gorm.ErrRecordNotFound,那么就会自动返回errusernotfound
+	return u, err
 }

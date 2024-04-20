@@ -7,20 +7,27 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"xiaoweishu/webook/internal/web"
+	ijwt "xiaoweishu/webook/internal/web/jwt"
 )
 
 type LoginJWTMiddlewareBuilder struct {
+	ijwt.Handler
 }
 
-func NewLoginJWTMiddlewareBuilder() *LoginJWTMiddlewareBuilder {
-	return &LoginJWTMiddlewareBuilder{}
+func NewLoginJWTMiddlewareBuilder(hdl ijwt.Handler) *LoginJWTMiddlewareBuilder {
+	return &LoginJWTMiddlewareBuilder{
+		Handler: hdl,
+	}
 }
 func (l *LoginJWTMiddlewareBuilder) CheckLogin() gin.HandlerFunc {
 	//用go的方式编码解码
 	return func(ctx *gin.Context) {
 		path := ctx.Request.URL.Path
-		if path == "/users/signup" || path == "/users/login" {
+		if path == "/users/signup" ||
+			path == "/users/login" ||
+			path == "/users/login_sms/code/send" ||
+			path == "/users/login_sms" ||
+			path == "/oauth2/wechat/authurl" {
 			// 不需要登录校验
 			return
 		}
@@ -39,9 +46,9 @@ func (l *LoginJWTMiddlewareBuilder) CheckLogin() gin.HandlerFunc {
 			return
 		}
 		tokenStr := segs[1]
-		claims := &web.UserClaims{}
+		claims := &ijwt.UserClaims{}
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-			return web.JWTKey, nil
+			return ijwt.JWTKey, nil
 		})
 		if err != nil {
 			// token 不对，token 是伪造的
@@ -64,7 +71,7 @@ func (l *LoginJWTMiddlewareBuilder) CheckLogin() gin.HandlerFunc {
 		now := time.Now()
 		if claims.ExpiresAt.Sub(now) < time.Second*50 {
 			claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(time.Minute))
-			tokenStr, err = token.SignedString(web.JWTKey)
+			tokenStr, err = token.SignedString(ijwt.JWTKey)
 			if err != nil {
 				//记录日志
 				log.Println("jwt续约失败", err)
