@@ -3,7 +3,7 @@ package ioc
 import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
-	"xiaoweishu/webook/internal/pkg/logger"
+	"xiaoweishu/webook/pkg/logger"
 )
 
 func InitLogger() logger.LoggerV1 {

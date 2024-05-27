@@ -253,7 +253,7 @@ func (h *ArticleHandler) PubDetail(ctx *gin.Context) {
 	uc := ctx.MustGet("user").(ijwt.UserClaims)
 	eg.Go(func() error {
 		var er error
-		art, er = h.svc.GetPubById(ctx, id, uc.Uid)
+		art, er = h.svc.GetPubById(ctx, id)
 		return er
 	})
 	//异步中尽量少一些操作

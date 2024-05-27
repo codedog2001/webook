@@ -7,11 +7,11 @@ import (
 	"github.com/redis/go-redis/v9"
 	"strings"
 	"time"
-	"xiaoweishu/webook/internal/pkg/ginx/mididlewares/ratelimit"
-	"xiaoweishu/webook/internal/pkg/logger"
 	"xiaoweishu/webook/internal/web"
 	"xiaoweishu/webook/internal/web/jwt"
 	"xiaoweishu/webook/internal/web/middleware"
+	"xiaoweishu/webook/pkg/ginx/mididlewares/ratelimit"
+	"xiaoweishu/webook/pkg/logger"
 )
 
 func InitWebServer(mdls []gin.HandlerFunc, userHdl *web.UserHandLer,

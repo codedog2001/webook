@@ -5,8 +5,8 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	glogger "gorm.io/gorm/logger"
-	"xiaoweishu/webook/internal/pkg/logger"
 	"xiaoweishu/webook/internal/repository/dao"
+	"xiaoweishu/webook/pkg/logger"
 )
 
 // 一般使用viper都会把配置解析到结构体中，而不是直接去使用

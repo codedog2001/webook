@@ -5,8 +5,9 @@ import (
 	"errors"
 	"github.com/ecodeclub/ekit/queue"
 	"github.com/ecodeclub/ekit/slice"
+	"math"
 	"time"
-	"xiaoweishu/webook/interactive/service"
+	intrv1 "xiaoweishu/webook/api/proto/gen/intr/v1"
 	"xiaoweishu/webook/internal/domain"
 	"xiaoweishu/webook/internal/repository"
 )
@@ -17,13 +18,28 @@ type RankingService interface {
 }
 type BatchRankingService struct {
 	//用来取点赞数
-	intrSvc service.InteractiveService
+	intrSvc intrv1.InteractiveServiceClient
 	//用来查找文章
 	artSvc    ArticleService
 	batchSize int
-	sooreFunc func(likeCnt int64, utime time.Time) float64 //计算分数的算法，utime是用于筛查数据的，七天以前的就不需要了
+	scoreFunc func(likeCnt int64, utime time.Time) float64 //计算分数的算法，utime是用于筛查数据的，七天以前的就不需要了
 	n         int
 	repo      repository.RankingRepository
+}
+
+func NewBatchRankingService(intrSvc intrv1.InteractiveServiceClient,
+	artSvc ArticleService) RankingService {
+	return &BatchRankingService{
+		intrSvc:   intrSvc,
+		artSvc:    artSvc,
+		batchSize: 100,
+		n:         100,
+		scoreFunc: func(likeCnt int64, utime time.Time) float64 {
+			// 时间
+			duration := time.Since(utime).Seconds()
+			return float64(likeCnt-1) / math.Pow(duration+2, 1.5)
+		},
+	}
 }
 
 func (b *BatchRankingService) TopN(ctx context.Context) error {
@@ -70,13 +86,17 @@ func (b *BatchRankingService) topN(ctx context.Context) ([]domain.Article, error
 		})
 		//取点赞数
 		//要求取出来的数据是 map[art.id]domain.article
-		intrMap, err := b.intrSvc.GetByIds(ctx, "article", ids)
+		intrResp, err := b.intrSvc.GetByIds(ctx, &intrv1.GetByIdsRequest{
+			Biz: "article",
+			Ids: ids,
+		})
 		if err != nil {
 			return nil, err
 		}
+		intrMap := intrResp.Intrs
 		for _, art := range arts {
 			intr := intrMap[art.Id]
-			score := b.sooreFunc(intr.LikeCnt, art.Utime)
+			score := b.scoreFunc(intr.LikeCnt, art.Utime)
 			element := Score{
 				score: score,
 				art:   art,
