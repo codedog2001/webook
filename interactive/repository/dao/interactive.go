@@ -12,14 +12,58 @@ type InteractiveDAO interface {
 	InsertLikeInfo(ctx context.Context, biz string, id int64, uid int64) error
 	DeleteLikeInfo(ctx context.Context, biz string, id int64, uid int64) error
 	InsertCollectionBiz(ctx context.Context, cb UserCollectionBiz) error
-	GetLikeInfo(ctx context.Context,
-		biz string, id int64, uid int64) (UserLikeBiz, error)
-	GetCollectInfo(ctx context.Context,
-		biz string, id int64, uid int64) (UserCollectionBiz, error)
+	GetLikeInfo(ctx context.Context, biz string, id int64, uid int64) (UserLikeBiz, error)
+	GetCollectInfo(ctx context.Context, biz string, id int64, uid int64) (UserCollectionBiz, error)
 	Get(ctx context.Context, biz string, id int64) (Interactive, error)
+	BatchIncrReadCnt(ctx context.Context, bizs []string, ids []int64) error
+	GetByIds(ctx context.Context, biz string, ids []int64) ([]Interactive, error)
 }
 type GORMInteractiveDAO struct {
 	db *gorm.DB
+}
+
+func (DAO GORMInteractiveDAO) GetByIds(ctx context.Context, biz string, ids []int64) ([]Interactive, error) {
+	var res []Interactive
+	err := DAO.db.WithContext(ctx).Where("biz=? AND biz_id IN ?", biz, ids).Find(&res).Error
+	return res, err
+
+}
+
+//  单个增加阅读数的代码跟批量增加阅读数的代码大部分一样，可以做一个复用版本
+
+func (DAO GORMInteractiveDAO) BatchIncrReadCnt(ctx context.Context, bizs []string, ids []int64) error {
+	for i := 0; i < len(bizs); i++ {
+		err := DAO.db.WithContext(ctx).Clauses(clause.OnConflict{
+			DoUpdates: clause.Assignments(map[string]interface{}{
+				"read_cnt": gorm.Expr("`read_cnt` +1"), //由gorm来为我们做自增1
+				"utime":    time.Now().UnixMilli(),
+			}),
+		}).Create(&Interactive{
+			Biz:     bizs[i],
+			BizId:   ids[i],
+			Ctime:   time.Now().UnixMilli(),
+			Utime:   time.Now().UnixMilli(),
+			ReadCnt: 1,
+		}).Error
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// 复用单个增加阅读数的代码
+func (DAO GORMInteractiveDAO) BatchIncrReadCntV1(ctx context.Context, bizs []string, ids []int64) error {
+	return DAO.db.Transaction(func(tx *gorm.DB) error {
+		txDAO := NewGORMInteractiveDAO(tx)
+		for i := 0; i < len(bizs); i++ {
+			err := txDAO.IncrReadCnt(ctx, bizs[i], ids[i])
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (DAO GORMInteractiveDAO) IncrReadCnt(ctx context.Context, biz string, bizId int64) error {
@@ -105,14 +149,12 @@ func (DAO GORMInteractiveDAO) InsertCollectionBiz(ctx context.Context, cb UserCo
 	return DAO.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		err := tx.Clauses(clause.OnConflict{
 			DoUpdates: clause.Assignments(map[string]interface{}{
-				"utime":  now,
-				"status": 1,
+				"utime": now,
 			}),
 		}).Create(&cb).Error
 		if err != nil {
 			return err
 		}
-
 		return tx.Clauses(clause.OnConflict{
 			DoUpdates: clause.Assignments(map[string]interface{}{
 				"collect_cnt": gorm.Expr("`collect_cnt` +1"),
@@ -130,7 +172,6 @@ func (DAO GORMInteractiveDAO) InsertCollectionBiz(ctx context.Context, cb UserCo
 
 func (DAO GORMInteractiveDAO) GetLikeInfo(ctx context.Context, biz string, id int64, uid int64) (UserLikeBiz, error) {
 	var res UserLikeBiz
-	//肯定是已发表的文章才会有点赞
 	err := DAO.db.WithContext(ctx).Where("biz=? AND biz_id=? AND uid =? AND status =?", biz, id, uid, 1).First(&res).Error
 	if err != nil {
 		return UserLikeBiz{}, err
@@ -140,7 +181,7 @@ func (DAO GORMInteractiveDAO) GetLikeInfo(ctx context.Context, biz string, id in
 
 func (DAO GORMInteractiveDAO) GetCollectInfo(ctx context.Context, biz string, id int64, uid int64) (UserCollectionBiz, error) {
 	var res UserCollectionBiz
-	err := DAO.db.WithContext(ctx).Where("biz=? AND biz_id=? AND uid =? AND status=?", biz, id, uid, 1).First(&res).Error
+	err := DAO.db.WithContext(ctx).Where("biz=? AND biz_id=? AND uid =? ", biz, id, uid).First(&res).Error
 	if err != nil {
 		return UserCollectionBiz{}, err
 	}

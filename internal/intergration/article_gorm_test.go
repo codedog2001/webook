@@ -21,12 +21,12 @@ type ArticleHandlerSuite struct {
 	sever *gin.Engine
 }
 
-func (s *ArticleHandlerSuite) TearDownTest() {
-	err := s.db.Exec("truncate table `articles`").Error
-	assert.NoError(s.T(), err)
-	err = s.db.Exec("truncate table `published_articles`").Error
-	assert.NoError(s.T(), err)
-}
+//func (s *ArticleHandlerSuite) TearDownTest() {
+//	err := s.db.Exec("truncate table `articles`").Error
+//	assert.NoError(s.T(), err)
+//	err = s.db.Exec("truncate table `published_articles`").Error
+//	assert.NoError(s.T(), err)
+//}
 
 func TestArticleHandler(t *testing.T) {
 	suite.Run(t, &ArticleHandlerSuite{})

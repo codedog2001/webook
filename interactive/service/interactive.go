@@ -3,8 +3,9 @@ package service
 import (
 	"context"
 	"golang.org/x/sync/errgroup"
-	"xiaoweishu/webook/internal/domain"
-	"xiaoweishu/webook/internal/repository"
+	"xiaoweishu/webook/interactive/domain"
+	"xiaoweishu/webook/interactive/repository"
+	"xiaoweishu/webook/pkg/logger"
 )
 
 type InteractiveService interface {
@@ -13,10 +14,25 @@ type InteractiveService interface {
 	CancelLike(c context.Context, biz string, id int64, uid int64) error
 	Collect(ctx context.Context, biz string, bizId, cid, uid int64) error
 	Get(ctx context.Context, biz string, id int64, uid int64) (domain.Interactive, error)
+	GetByIds(ctx context.Context, biz string, ids []int64) (map[int64]domain.Interactive, error)
 }
 
 type interactiveService struct {
 	repo repository.InteractiveRepository
+	l    logger.LoggerV1
+}
+
+func (i interactiveService) GetByIds(ctx context.Context, biz string, ids []int64) (map[int64]domain.Interactive, error) {
+	intrs, err := i.repo.GetByIds(ctx, biz, ids)
+	if err != nil {
+		return nil, err
+	}
+	res := make(map[int64]domain.Interactive, len(intrs))
+	for _, intr := range intrs {
+		res[intr.BizId] = intr
+	}
+	return res, nil
+
 }
 
 func (i interactiveService) IncrReadCnt(ctx context.Context, biz string, bizId int64) error {
@@ -70,11 +86,13 @@ func (i interactiveService) Get(ctx context.Context, biz string, id int64, uid i
 		return er
 	})
 	//若两个并发协程出错，其出错结果会放在eg.wait()中
+	//谁先出错就放谁的
+	err = eg.Wait()
 	return intr, eg.Wait()
 
 }
 
-func NewinteractiveService(repo repository.InteractiveRepository) InteractiveService {
+func NewInteractiveService(repo repository.InteractiveRepository) InteractiveService {
 	return &interactiveService{
 		repo: repo,
 	}

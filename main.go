@@ -1,12 +1,22 @@
 package main
 
 import (
+	"context"
 	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"log"
 	"net/http"
+	"time"
+	events2 "xiaoweishu/webook/interactive/events"
+	repository2 "xiaoweishu/webook/interactive/repository"
+	cache2 "xiaoweishu/webook/interactive/repository/cache"
+	dao2 "xiaoweishu/webook/interactive/repository/dao"
+	service2 "xiaoweishu/webook/interactive/service"
+	"xiaoweishu/webook/internal/events"
+	"xiaoweishu/webook/internal/events/article"
 	"xiaoweishu/webook/internal/repository"
 	"xiaoweishu/webook/internal/repository/cache"
 	"xiaoweishu/webook/internal/repository/dao"
@@ -19,7 +29,25 @@ import (
 func main() {
 	initLogger()
 	initViper()
-	server := InitWebServerv1()
+	tpCancel := ioc.InitOTEL()
+	defer func() {
+		//新建一个带超时控制的ctx来取消tp
+		//不过就算是关闭失败，超时了也会取消ctx
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		tpCancel(ctx)
+	}()
+	app := InitWebServerv1()
+	initPrometheus()
+	//消费者进程是一开始就要部署好，所以这里要启动消费者进程
+	//直到生产者产生消息放入分区之后，消费者拿到消息之后，才会进行消费，消费者进程才会被激活
+	for _, c := range app.consumers {
+		err := c.Start()
+		if err != nil {
+			panic(err)
+		}
+	}
+	server := app.server
 	server.GET("/hello", func(ctx *gin.Context) {
 		ctx.String(http.StatusOK, "hello，启动成功了！")
 	})
@@ -28,7 +56,23 @@ func main() {
 		return
 	}
 }
-func InitWebServerv1() *gin.Engine {
+
+func initPrometheus() {
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		err := http.ListenAndServe(":8081", nil)
+		if err != nil {
+			panic(err)
+		}
+	}()
+}
+
+type App struct {
+	server    *gin.Engine
+	consumers []events.Consumer
+}
+
+func InitWebServerv1() *App {
 	cmdable := ioc.InitRedis()
 	handler := jwt.NewRedisJWTHandler(cmdable)
 	loggerV1 := ioc.InitLogger()
@@ -45,8 +89,26 @@ func InitWebServerv1() *gin.Engine {
 	userHandLer := web.NewUserHandLer(userService, codeSerVice, handler)
 	wechatService := ioc.InitWechatService(loggerV1)
 	oAuth2WechatHandLer := web.NewOAuth2WechatHandler(wechatService, userService, handler)
-	engine := ioc.InitWebServer(v, userHandLer, oAuth2WechatHandLer)
-	return engine
+	articleDAO := dao.NewArticleGORMDAO(db)
+	articleCache := cache.NewArticleRedisCache(cmdable)
+	articleRepository := repository.NewCachedArticleRepository(articleDAO, userRepository, articleCache)
+	client := ioc.InitSaramaClient()
+	syncProducer := ioc.InitSyncProducer(client)
+	producer := article.NewSaramaSyncProducer(syncProducer)
+	articleService := service.NewArticleService(articleRepository, producer, loggerV1)
+	interactiveDAO := dao2.NewGORMInteractiveDAO(db)
+	interactiveCache := cache2.NewInteractiveRedisCache(cmdable)
+	interactiveRepository := repository2.NewCachedInteractiveRepository(interactiveDAO, interactiveCache, loggerV1)
+	interactiveService := service2.NewInteractiveService(interactiveRepository)
+	articleHandler := web.NewArticleHandler(loggerV1, articleService, interactiveService)
+	engine := ioc.InitWebServer(v, userHandLer, oAuth2WechatHandLer, articleHandler)
+	interactiveReadEventConsumer := events2.NewInteractiveReadEventConsumer(interactiveRepository, client, loggerV1)
+	v2 := ioc.InitConsumers(interactiveReadEventConsumer)
+	app := &App{
+		server:    engine,
+		consumers: v2,
+	}
+	return app
 }
 func initLogger() {
 	logger, err := zap.NewDevelopment()

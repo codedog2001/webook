@@ -7,7 +7,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"strconv"
 	"time"
-	"xiaoweishu/webook/internal/domain"
+	"xiaoweishu/webook/interactive/domain"
+	"xiaoweishu/webook/interactive/repository/dao"
 )
 
 var (
@@ -43,18 +44,18 @@ func (i InteractiveRedisCache) IncrReadCntIfPresent(ctx context.Context, biz str
 }
 
 func (i InteractiveRedisCache) IncrLikeCntIfPresent(ctx context.Context, biz string, id int64) error {
-	//TODO implement me
-	panic("implement me")
+	key := i.key(biz, id)
+	return i.client.Eval(ctx, luaIncrCnt, []string{key}, fieldLikeCnt, 1).Err()
 }
 
-func (i InteractiveRedisCache) DecrLikeCntIfPresent(ctx context.Context, biz string, id int64) error {
-	//TODO implement me
-	panic("implement me")
+func (i InteractiveRedisCache) DecrLikeCntIfPresent(ctx context.Context, biz string, biz_id int64) error {
+	key := i.key(biz, biz_id)
+	return i.client.Eval(ctx, luaIncrCnt, []string{key}, fieldLikeCnt, -1).Err()
 }
 
 func (i InteractiveRedisCache) IncrCollectCntIfPresent(ctx context.Context, biz string, id int64) error {
-	//TODO implement me
-	panic("implement me")
+	key := i.key(biz, id)
+	return i.client.Eval(ctx, luaIncrCnt, []string{key}, fieldCollectCnt, 1).Err()
 
 }
 
@@ -66,9 +67,11 @@ func (i InteractiveRedisCache) Get(ctx context.Context, biz string, id int64) (d
 		return domain.Interactive{}, err
 	}
 	if len(res) == 0 {
-		return domain.Interactive{}, ErrKeyNotExist
+		return domain.Interactive{}, dao.ErrRecordNotFound
 	}
 	var intr domain.Interactive
+	intr.Biz = biz
+	intr.BizId = id
 	intr.CollectCnt, _ = strconv.ParseInt(res[fieldCollectCnt], 10, 64)
 	intr.LikeCnt, _ = strconv.ParseInt(res[fieldLikeCnt], 10, 64)
 	intr.ReadCnt, _ = strconv.ParseInt(res[fieldReadCnt], 10, 64)

@@ -1,33 +1,37 @@
 package web
 
 import (
-	"context"
 	"github.com/ecodeclub/ekit/slice"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"
 	"net/http"
 	"strconv"
 	"time"
+	domain2 "xiaoweishu/webook/interactive/domain"
+	service2 "xiaoweishu/webook/interactive/service"
 	"xiaoweishu/webook/internal/domain"
-	"xiaoweishu/webook/internal/pkg/logger"
 	"xiaoweishu/webook/internal/service"
 	ijwt "xiaoweishu/webook/internal/web/jwt"
+	logger2 "xiaoweishu/webook/pkg/logger"
 )
 
 //只有web层不需要用到接口，再往下都应该定义成接口
 
 type ArticleHandler struct {
 	svc     service.ArticleService
-	l       logger.LoggerV1
+	l       logger2.LoggerV1
 	biz     string //这个标识是为了跟视频，图片等业务进行区分
-	intrSvc service.InteractiveService
+	intrSvc service2.InteractiveService
 }
 
-func NewArticleHandler(l logger.LoggerV1, svc service.ArticleService) *ArticleHandler {
+func NewArticleHandler(l logger2.LoggerV1,
+	svc service.ArticleService,
+	intrSvc service2.InteractiveService) *ArticleHandler {
 	return &ArticleHandler{
-		svc: svc,
-		l:   l,
-		biz: "article",
+		svc:     svc,
+		l:       l,
+		intrSvc: intrSvc,
+		biz:     "article",
 	}
 }
 func (h *ArticleHandler) RegisterRoutes(server *gin.Engine) {
@@ -60,7 +64,7 @@ func (h *ArticleHandler) Publish(ctx *gin.Context) {
 	if err != nil {
 		return
 	}
-	uc := ctx.MustGet("user").(ijwt.UserClaims)
+	uc := ctx.MustGet("claims").(*ijwt.UserClaims)
 	id, err := h.svc.Publish(ctx, domain.Article{
 		Id:      req.Id,
 		Title:   req.Title,
@@ -75,8 +79,8 @@ func (h *ArticleHandler) Publish(ctx *gin.Context) {
 			Code: 5,
 		})
 		h.l.Error("发表文章失败",
-			logger.Int64("uid", uc.Uid),
-			logger.Error(err))
+			logger2.Int64("uid", uc.Uid),
+			logger2.Error(err))
 		return
 	}
 	ctx.JSON(http.StatusOK, Result{
@@ -112,8 +116,8 @@ func (h *ArticleHandler) Edit(ctx *gin.Context) {
 			Code: 5,
 		})
 		h.l.Error("保存文章数据失败",
-			logger.Int64("uid", uc.Uid),
-			logger.Error(err))
+			logger2.Int64("uid", uc.Uid),
+			logger2.Error(err))
 		return
 	}
 	ctx.JSON(http.StatusOK, Result{
@@ -139,9 +143,9 @@ func (h *ArticleHandler) Withdraw(ctx *gin.Context) {
 			Msg:  "撤回文章失败",
 		})
 		h.l.Error("撤回文章失败",
-			logger.Int64("uid", uc.Uid),
-			logger.Int64("id", req.Id),
-			logger.Error(err))
+			logger2.Int64("uid", uc.Uid),
+			logger2.Int64("id", req.Id),
+			logger2.Error(err))
 		return
 	}
 	ctx.JSON(http.StatusOK, Result{
@@ -161,7 +165,7 @@ func (h *ArticleHandler) Detail(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, Result{
 			Msg: "系统错误", //查看文章详情失败
 		})
-		h.l.Error("查看文章详情失败", logger.Int64("id", id))
+		h.l.Error("查看文章详情失败", logger2.Int64("id", id))
 		return
 	}
 	//接下来做一个鉴权，因为这是创作者接口的查询，按道理来说，是不能查询别人的文章的
@@ -172,8 +176,8 @@ func (h *ArticleHandler) Detail(ctx *gin.Context) {
 			Code: 5,
 		})
 		h.l.Error("非法查询文章",
-			logger.Int64("id", id),
-			logger.Int64("uid", uc.Uid))
+			logger2.Int64("id", id),
+			logger2.Int64("uid", uc.Uid))
 		return
 	}
 	//最后需要新建一个结构体，将对应的字段展示给前端
@@ -205,10 +209,10 @@ func (h *ArticleHandler) List(ctx *gin.Context) {
 			Msg:  "系统错误",
 			Code: 5,
 		})
-		h.l.Error("查找文章列表失败", logger.Error(err),
-			logger.Int("pageOffset", page.offset),
-			logger.Int("pageLimit", page.limit),
-			logger.Int64("uid", uc.Uid))
+		h.l.Error("查找文章列表失败", logger2.Error(err),
+			logger2.Int("pageOffset", page.offset),
+			logger2.Int("pageLimit", page.limit),
+			logger2.Int64("uid", uc.Uid))
 		return
 	}
 	ctx.JSON(http.StatusOK, Result{
@@ -237,22 +241,23 @@ func (h *ArticleHandler) PubDetail(ctx *gin.Context) {
 			Msg:  "id参数错误",
 		})
 		h.l.Warn("查询文章失败，id格式不对",
-			logger.String("id", idstr),
-			logger.Error(err))
+			logger2.String("id", idstr),
+			logger2.Error(err))
 		return
 	}
 	var (
 		eg   errgroup.Group //常用来管理多条个并发执行
 		art  domain.Article
-		intr domain.Interactive
+		intr domain2.Interactive
 	)
+	uc := ctx.MustGet("user").(ijwt.UserClaims)
 	eg.Go(func() error {
 		var er error
-		art, er = h.svc.GetPubById(ctx, id)
+		art, er = h.svc.GetPubById(ctx, id, uc.Uid)
 		return er
 	})
 	//异步中尽量少一些操作
-	uc := ctx.MustGet("user").(ijwt.UserClaims)
+
 	eg.Go(func() error {
 		var er error
 		intr, er = h.intrSvc.Get(ctx, h.biz, id, uc.Uid)
@@ -270,23 +275,24 @@ func (h *ArticleHandler) PubDetail(ctx *gin.Context) {
 			Code: 5,
 		})
 		h.l.Error("查询文章失败，系统错误",
-			logger.Int64("artid", id),
-			logger.Int64("uid", uc.Uid),
-			logger.Error(err))
+			logger2.Int64("artid", id),
+			logger2.Int64("uid", uc.Uid),
+			logger2.Error(err))
 		return
 	}
 	//若进到这里，说明查询文章成功，所以阅读数需要加1
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second) //执行这个异步函数，超时时间为1s
-		defer cancel()
-		er := h.intrSvc.IncrReadCnt(ctx, h.biz, id)
-		if er != nil {
-			h.l.Error("阅读数+1失败",
-				logger.Int64("artid", id),
-				logger.Int64("uid", uc.Uid),
-				logger.Error(err))
-		}
-	}()
+	//接入kafka后，以下代码都不需要了，前面会生成生产者消息
+	//go func() {
+	//	ctx, cancel := context.WithTimeout(context.Background(), time.Second) //执行这个异步函数，超时时间为1s
+	//	defer cancel()
+	//	er := h.intrSvc.IncrReadCnt(ctx, h.biz, id)
+	//	if er != nil {
+	//		h.l.Error("阅读数+1失败",
+	//			logger.Int64("artid", id),
+	//			logger.Int64("uid", uc.Uid),
+	//			logger.Error(err))
+	//	}
+	//}()
 	ctx.JSON(http.StatusOK, Result{
 		Data: ArticleVo{
 			Id:         art.Id,
@@ -330,9 +336,9 @@ func (h *ArticleHandler) Like(c *gin.Context) {
 			Msg:  "点赞/取消点赞失败",
 		})
 		h.l.Error("点赞/取消点赞失败",
-			logger.Int64("artid", req.Id),
-			logger.Int64("uid", uc.Uid),
-			logger.Error(err))
+			logger2.Int64("artid", req.Id),
+			logger2.Int64("uid", uc.Uid),
+			logger2.Error(err))
 	}
 	c.JSON(http.StatusOK, Result{Msg: "ok"})
 }

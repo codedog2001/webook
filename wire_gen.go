@@ -7,7 +7,13 @@
 package main
 
 import (
-	"github.com/gin-gonic/gin"
+	"github.com/google/wire"
+	"xiaoweishu/webook/interactive/events"
+	repository2 "xiaoweishu/webook/interactive/repository"
+	cache2 "xiaoweishu/webook/interactive/repository/cache"
+	dao2 "xiaoweishu/webook/interactive/repository/dao"
+	service2 "xiaoweishu/webook/interactive/service"
+	"xiaoweishu/webook/internal/events/article"
 	"xiaoweishu/webook/internal/repository"
 	"xiaoweishu/webook/internal/repository/cache"
 	"xiaoweishu/webook/internal/repository/dao"
@@ -19,7 +25,7 @@ import (
 
 // Injectors from wire.go:
 
-func InitWebServer() *gin.Engine {
+func InitWebServer() *App {
 	cmdable := ioc.InitRedis()
 	handler := jwt.NewRedisJWTHandler(cmdable)
 	loggerV1 := ioc.InitLogger()
@@ -36,6 +42,28 @@ func InitWebServer() *gin.Engine {
 	userHandLer := web.NewUserHandLer(userService, codeSerVice, handler)
 	wechatService := ioc.InitWechatService(loggerV1)
 	oAuth2WechatHandLer := web.NewOAuth2WechatHandler(wechatService, userService, handler)
-	engine := ioc.InitWebServer(v, userHandLer, oAuth2WechatHandLer)
-	return engine
+	articleDAO := dao.NewArticleGORMDAO(db)
+	articleCache := cache.NewArticleRedisCache(cmdable)
+	articleRepository := repository.NewCachedArticleRepository(articleDAO, userRepository, articleCache)
+	client := ioc.InitSaramaClient()
+	syncProducer := ioc.InitSyncProducer(client)
+	producer := article.NewSaramaSyncProducer(syncProducer)
+	articleService := service.NewArticleService(articleRepository, producer, loggerV1)
+	interactiveDAO := dao2.NewGORMInteractiveDAO(db)
+	interactiveCache := cache2.NewInteractiveRedisCache(cmdable)
+	interactiveRepository := repository2.NewCachedInteractiveRepository(interactiveDAO, interactiveCache, loggerV1)
+	interactiveService := service2.NewInteractiveService(interactiveRepository)
+	articleHandler := web.NewArticleHandler(loggerV1, articleService, interactiveService)
+	engine := ioc.InitWebServer(v, userHandLer, oAuth2WechatHandLer, articleHandler)
+	interactiveReadEventConsumer := events.NewInteractiveReadEventConsumer(interactiveRepository, client, loggerV1)
+	v2 := ioc.InitConsumers(interactiveReadEventConsumer)
+	app := &App{
+		server:    engine,
+		consumers: v2,
+	}
+	return app
 }
+
+// wire.go:
+
+var interactiveSVCSet = wire.NewSet(dao2.NewGORMInteractiveDAO, cache2.NewInteractiveRedisCache, repository2.NewCachedInteractiveRepository, service2.NewInteractiveService)

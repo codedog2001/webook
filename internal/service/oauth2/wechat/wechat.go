@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"xiaoweishu/webook/internal/domain"
-	"xiaoweishu/webook/internal/pkg/logger"
+	"xiaoweishu/webook/pkg/logger"
 )
 
 type Result struct {

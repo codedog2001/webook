@@ -1,5 +1,6 @@
 test:
   key: value1234
+
 redis:
   addr: "localhost:6379"
 
@@ -9,3 +10,10 @@ db:
 kafka:
   addr:
     - "localhost:9094"
+
+grpc:
+  server:
+    addr: ":8090"
+
+#grpc:
+#  addr: ":8090"
