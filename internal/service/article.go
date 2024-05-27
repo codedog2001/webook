@@ -4,7 +4,9 @@ import (
 	"context"
 	"time"
 	"xiaoweishu/webook/internal/domain"
+	"xiaoweishu/webook/internal/events/article"
 	"xiaoweishu/webook/internal/repository"
+	logger2 "xiaoweishu/webook/pkg/logger"
 )
 
 type ArticleService interface {
@@ -13,17 +15,25 @@ type ArticleService interface {
 	Withdraw(ctx context.Context, uid int64, id int64) error
 	GetByAuthor(ctx context.Context, uid int64, offset int, limit int) ([]domain.Article, error)
 	GetById(ctx context.Context, id int64) (domain.Article, error)
-	GetPubById(ctx context.Context, id int64) (domain.Article, error)
-	ListPub(ctx context.Context,
-		start time.Time, offset, limit int) ([]domain.Article, error)
+	GetPubById(ctx context.Context, id, uid int64) (domain.Article, error)
+	ListPub(ctx context.Context, start time.Time, offset, limit int) ([]domain.Article, error)
 }
 type articleService struct {
-	repo repository.ArticleRepository
+	repo     repository.ArticleRepository
+	producer article.Producer
+	l        logger2.LoggerV1
 }
 
-func NewArticleService(repo repository.ArticleRepository) ArticleService {
+func (a articleService) ListPub(ctx context.Context, start time.Time, offset, limit int) ([]domain.Article, error) {
+	return a.repo.ListPub(ctx, start, offset, limit)
+}
+
+func NewArticleService(repo repository.ArticleRepository,
+	producer article.Producer, l logger2.LoggerV1) ArticleService {
 	return &articleService{
-		repo: repo,
+		repo:     repo,
+		producer: producer,
+		l:        l,
 	}
 }
 
@@ -60,14 +70,24 @@ func (a articleService) GetById(ctx context.Context, id int64) (domain.Article, 
 	return a.repo.GetById(ctx, id)
 }
 
-func (a articleService) GetPubById(ctx context.Context, id int64) (domain.Article, error) {
+func (a articleService) GetPubById(ctx context.Context, id, uid int64) (domain.Article, error) {
 	art, err := a.repo.GetPubById(ctx, id)
+	go func() {
+		if err == nil {
+			er := a.producer.ProduceReadEvent(article.ReadEvent{
+				Aid: id,
+				Uid: uid,
+			})
+			if er != nil {
+				a.l.Error("发送ReadEvent 失败",
+					logger2.Int64("aid", id),
+					logger2.Int64("uid", uid),
+					logger2.Error(err))
+			}
+		}
+	}()
 	if err != nil {
 		return domain.Article{}, err
 	}
 	return art, nil
-}
-func (a *articleService) ListPub(ctx context.Context,
-	start time.Time, offset, limit int) ([]domain.Article, error) {
-	return a.repo.ListPub(ctx, start, offset, limit)
 }
